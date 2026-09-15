@@ -41,7 +41,7 @@ await g.execute(async () => { throw httpError(404); });
 
 Exponential backoff with full jitter is necessary but not sufficient. During a partial outage every caller retries, and the extra load is precisely what turns it into a total one.
 
-So retries are drawn from a **budget** — a token bucket capped as a fraction of real traffic (default 10%). When the budget is spent, the call fails with `RetryBudgetExhaustedError` instead of adding to the pile. This is the piece most retry implementations omit.
+So retries are drawn from a **budget** — a token bucket earning `ratio` per call (default 10%), whose balance is capped at the retries the traffic actually observed over the last window can justify. One call earns one deposit, so retries are funded by real traffic and never by other retries. When the budget is spent, the call fails with `RetryBudgetExhaustedError` instead of adding to the pile. This is the piece most retry implementations omit.
 
 ### 3. Slow is worse than down
 
@@ -71,6 +71,8 @@ This is the one that matters when money is involved.
 
 **The clock is injectable.** Every timing test in the suite runs against a `ManualClock`, so the whole suite finishes in ~115ms with no fake timers and no flakiness.
 
+**The bulkhead queue is bounded in time, not just in length.** A waiter with no deadline is held exactly as long as the vendor is slow, which is the failure the bulkhead was added to prevent. Callers give up after `queueTimeoutMs` with a `BulkheadTimeoutError`, and `acquire` accepts an `AbortSignal` so a caller can withdraw earlier.
+
 **Full jitter can pick zero.** `random() * ceiling`, not `ceiling/2 + random()*ceiling/2`. Decorrelating retries is the entire point; a jitter that guarantees a minimum delay is just a slower thundering herd.
 
 ---
@@ -83,8 +85,8 @@ guard({
   breaker:  { failureRateThreshold: 0.5, slowCallRateThreshold: 0.5, slowCallMs: 2_000,
               minimumThroughput: 20, windowMs: 30_000, openStateMs: 30_000, halfOpenProbes: 3 },
   retry:    { maxAttempts: 3, baseDelayMs: 100, maxDelayMs: 2_000 },
-  budget:   { ratio: 0.1, minTokens: 10 },
-  bulkhead: { maxConcurrent: 20, maxQueue: 50 },
+  budget:   { ratio: 0.1, minTokens: 10, windowMs: 10_000 },
+  bulkhead: { maxConcurrent: 20, maxQueue: 50, queueTimeoutMs: 10_000 },
   classifier,   // override how outcomes are read
   clock,        // override for tests
 });
@@ -96,7 +98,7 @@ guard({
 | `executeOnce(fn, { confirm })` | operations that must happen at most once |
 | `state()` | `'closed'` \| `'open'` \| `'half-open'` |
 
-Errors: `CircuitOpenError`, `BulkheadFullError`, `RetryBudgetExhaustedError`, `IndeterminateError`.
+Errors: `CircuitOpenError`, `BulkheadFullError`, `BulkheadTimeoutError`, `RetryBudgetExhaustedError`, `IndeterminateError`.
 
 The building blocks — `CircuitBreaker`, `Bulkhead`, `RetryBudget` — are exported individually if you want to compose them yourself.
 
@@ -105,7 +107,7 @@ The building blocks — `CircuitBreaker`, `Bulkhead`, `RetryBudget` — are expo
 ## Running it
 
 ```bash
-npm test        # 24 tests, no build step — Node strips the types
+npm test        # 30 tests, no build step — Node strips the types
 npm run build   # tsc to dist/
 node --experimental-strip-types examples/lending.ts
 ```

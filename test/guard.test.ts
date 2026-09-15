@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { guard } from '../src/guard.ts';
 import { Bulkhead } from '../src/bulkhead.ts';
 import { RetryBudget } from '../src/budget.ts';
-import { BulkheadFullError, CircuitOpenError } from '../src/types.ts';
+import { BulkheadFullError, BulkheadTimeoutError, CircuitOpenError } from '../src/types.ts';
 import { ManualClock, httpError } from './helpers.ts';
 
 test('an open circuit fails fast instead of calling the vendor', async () => {
@@ -59,4 +59,48 @@ test('retry budget grants, spends and refuses', () => {
   budget.deposit();
   budget.deposit();
   assert.equal(budget.withdraw(), true, 'traffic refills the allowance');
+});
+
+test('a queued caller gives up instead of waiting forever', async () => {
+  const bh = new Bulkhead('vendor', { maxConcurrent: 1, maxQueue: 5, queueTimeoutMs: 20 });
+  await bh.acquire();                       // the only slot, never released
+  await assert.rejects(bh.acquire(), BulkheadTimeoutError);
+  assert.deepEqual(bh.stats(), { inFlight: 1, queued: 0 }, 'a caller that gave up must leave the queue');
+});
+
+test('a queued caller can be cancelled by its own signal', async () => {
+  const bh = new Bulkhead('vendor', { maxConcurrent: 1, maxQueue: 5, queueTimeoutMs: 60_000 });
+  await bh.acquire();
+  const controller = new AbortController();
+  const queued = bh.acquire(controller.signal);
+  controller.abort(new Error('caller went away'));
+  await assert.rejects(queued, BulkheadTimeoutError);
+  assert.equal(bh.stats().queued, 0);
+});
+
+test('a slot freed after a waiter gave up still reaches a live waiter', async () => {
+  const bh = new Bulkhead('vendor', { maxConcurrent: 1, maxQueue: 5, queueTimeoutMs: 20 });
+  await bh.acquire();
+  const abandoned = bh.acquire();                    // times out at 20ms
+  await assert.rejects(abandoned, BulkheadTimeoutError);
+
+  const live = bh.acquire();                         // joins an empty queue
+  bh.release();
+  await live;                                        // must not hang behind a corpse
+  assert.deepEqual(bh.stats(), { inFlight: 1, queued: 0 });
+});
+
+test('the budget ceiling scales with observed throughput', () => {
+  const clock = new ManualClock();
+  const budget = new RetryBudget({ ratio: 0.25, minTokens: 2, windowMs: 1_000 }, clock);
+  assert.equal(budget.ceiling(), 2, 'a quiet service falls back to the floor');
+
+  for (let i = 0; i < 40; i += 1) budget.deposit();
+  assert.equal(budget.ceiling(), 10, '40 calls at 25% justifies 10 retries');
+  assert.equal(budget.available(), 10, 'the balance cannot exceed what traffic justifies');
+
+  clock.advance(1_001);
+  budget.deposit();
+  assert.equal(budget.ceiling(), 2, 'traffic ageing out of the window shrinks the cap');
+  assert.equal(budget.available(), 2);
 });

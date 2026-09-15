@@ -43,6 +43,21 @@ export class BulkheadFullError extends Error {
   }
 }
 
+/**
+ * Thrown when a caller queued for a bulkhead slot gave up — the queue-wait
+ * deadline passed, or the caller's own signal was aborted.
+ *
+ * A queue without a deadline recreates the failure the bulkhead exists to
+ * prevent: workers held indefinitely by a vendor that stopped answering.
+ */
+export class BulkheadTimeoutError extends Error {
+  readonly code = 'BULKHEAD_TIMEOUT';
+  constructor(name: string, detail: string, cause?: unknown) {
+    super(`bulkhead "${name}": ${detail}`, { cause });
+    this.name = 'BulkheadTimeoutError';
+  }
+}
+
 export class RetryBudgetExhaustedError extends Error {
   readonly code = 'RETRY_BUDGET_EXHAUSTED';
   constructor(name: string, cause: unknown) {

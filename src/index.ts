@@ -8,7 +8,7 @@ export { RetryBudget, defaultBudgetOptions } from './budget.ts';
 export type { BudgetOptions } from './budget.ts';
 export { defaultClassifier, retryAfterMs } from './classify.ts';
 export {
-  systemClock, CircuitOpenError, BulkheadFullError,
+  systemClock, CircuitOpenError, BulkheadFullError, BulkheadTimeoutError,
   RetryBudgetExhaustedError, IndeterminateError,
 } from './types.ts';
 export type { Clock, Classifier, Verdict } from './types.ts';

@@ -81,3 +81,23 @@ test('full-jitter backoff never exceeds its ceiling and is capped', () => {
   assert.ok(backoffDelay(10, options) < 1_000, 'must respect maxDelayMs');
   assert.equal(backoffDelay(3, { ...options, random: () => 0 }), 0, 'full jitter can pick zero');
 });
+
+test('a failing call cannot fund its own retries', async () => {
+  const clock = new ManualClock();
+  const g = guard({
+    name: 'bureau', clock,
+    retry: { maxAttempts: 10, random: fixedRandom },
+    budget: { ratio: 0.5, minTokens: 1 },
+    breaker: { minimumThroughput: 10_000 }, // keep the breaker out of this test
+  });
+  let calls = 0;
+  await assert.rejects(
+    g.execute(async () => { calls += 1; throw httpError(503); }),
+    RetryBudgetExhaustedError,
+  );
+  // One call earns one deposit on top of the opening allowance, and that pays
+  // for exactly one retry. Depositing per *attempt* would let the retries
+  // top the budget up as they spend it, which is the amplification the budget
+  // exists to prevent.
+  assert.equal(calls, 2, 'retries must be funded by real traffic, not by other retries');
+});

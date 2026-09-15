@@ -1,6 +1,6 @@
 import { CircuitBreaker, defaultBreakerOptions, type BreakerOptions, type BreakerState } from './breaker.ts';
-import { Bulkhead, defaultBulkheadOptions, type BulkheadOptions } from './bulkhead.ts';
-import { RetryBudget, defaultBudgetOptions, type BudgetOptions } from './budget.ts';
+import { Bulkhead, type BulkheadOptions } from './bulkhead.ts';
+import { RetryBudget, type BudgetOptions } from './budget.ts';
 import { defaultClassifier, retryAfterMs } from './classify.ts';
 import {
   IndeterminateError, RetryBudgetExhaustedError,
@@ -46,6 +46,12 @@ export interface OnceOptions<T> {
   confirmAttempts?: number;
 }
 
+/** What a confirmation lookup was able to establish about a non-replayable call. */
+type ConfirmOutcome<T> =
+  | { kind: 'performed'; value: T }
+  | { kind: 'not-performed' }
+  | { kind: 'unknown' };
+
 /**
  * Full-jitter exponential backoff.
  *
@@ -73,8 +79,8 @@ export class Guard {
     this.classifier = options.classifier ?? defaultClassifier;
     this.retry = { ...defaultRetryOptions, ...options.retry };
     this.breaker = new CircuitBreaker(options.name, { ...defaultBreakerOptions, ...options.breaker }, this.clock);
-    this.bulkhead = new Bulkhead(options.name, { ...defaultBulkheadOptions, ...options.bulkhead });
-    this.budget = new RetryBudget({ ...defaultBudgetOptions, ...options.budget });
+    this.bulkhead = new Bulkhead(options.name, options.bulkhead);
+    this.budget = new RetryBudget(options.budget, this.clock);
   }
 
   state(): BreakerState {
@@ -87,8 +93,10 @@ export class Guard {
    */
   async execute<T>(operation: () => Promise<T>): Promise<T> {
     let lastError: unknown;
+    // One call earns one deposit. Depositing per attempt would let retries top
+    // the budget up as they spend it, funding the amplification it exists to stop.
+    this.budget.deposit();
     for (let attempt = 1; attempt <= this.retry.maxAttempts; attempt += 1) {
-      this.budget.deposit();
       try {
         return await this.attempt(operation);
       } catch (error) {
@@ -123,21 +131,41 @@ export class Guard {
       if (verdict !== 'failure') throw error;
       if (!options.confirm) throw new IndeterminateError(this.name, error);
 
-      const attempts = options.confirmAttempts ?? 3;
-      for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        try {
-          const confirmed = await options.confirm();
-          // `undefined` is the vendor stating the operation did not happen.
-          if (confirmed === undefined) throw error;
-          return confirmed;
-        } catch (confirmError) {
-          if (confirmError === error) throw error;
-          if (attempt === attempts) throw new IndeterminateError(this.name, error);
-          await this.clock.sleep(backoffDelay(attempt, this.retry));
-        }
+      const outcome = await this.confirmOutcome(options.confirm, options.confirmAttempts ?? 3);
+      switch (outcome.kind) {
+        // The vendor did perform it; the caller gets the real result.
+        case 'performed': return outcome.value;
+        // The vendor states it did not, so the original failure stands.
+        case 'not-performed': throw error;
+        // Nobody can say. Explicitly not a failure — see IndeterminateError.
+        case 'unknown': throw new IndeterminateError(this.name, error);
       }
-      throw new IndeterminateError(this.name, error);
     }
+  }
+
+  /**
+   * Asks the confirmation lookup what actually happened.
+   *
+   * The lookup is a read, so it may be repeated. Its three answers are returned
+   * as data rather than signalled by throwing: distinguishing "the vendor says
+   * no" from "the lookup itself broke" by inspecting what came back out of a
+   * catch block is how the two get confused.
+   */
+  private async confirmOutcome<T>(
+    confirm: () => Promise<T | undefined>,
+    attempts: number,
+  ): Promise<ConfirmOutcome<T>> {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const confirmed = await confirm();
+        // `undefined` is the vendor stating the operation did not happen.
+        return confirmed === undefined ? { kind: 'not-performed' } : { kind: 'performed', value: confirmed };
+      } catch {
+        if (attempt === attempts) return { kind: 'unknown' };
+        await this.clock.sleep(backoffDelay(attempt, this.retry));
+      }
+    }
+    return { kind: 'unknown' };
   }
 
   private async attempt<T>(operation: () => Promise<T>): Promise<T> {

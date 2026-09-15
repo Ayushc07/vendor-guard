@@ -66,3 +66,20 @@ test('a rejected business error passes straight through without confirmation', a
   );
   assert.equal(confirmCalls, 0, '422 proves it did not happen; nothing to confirm');
 });
+
+test('a confirmation that rethrows the original failure is not read as proof', async () => {
+  const clock = new ManualClock();
+  const g = guard({ name: 'disbursal', clock, retry: { random: fixedRandom } });
+  const failure = networkError('ETIMEDOUT');
+  let confirmCalls = 0;
+  await assert.rejects(
+    g.executeOnce(
+      async () => { throw failure; },
+      { confirm: async () => { confirmCalls += 1; throw failure; }, confirmAttempts: 2 },
+    ),
+    IndeterminateError,
+  );
+  // Only `undefined` is the vendor stating the operation did not happen. A
+  // lookup that fails is an unsettled outcome, whatever it happens to throw.
+  assert.equal(confirmCalls, 2, 'a failing lookup is retried, not mistaken for a denial');
+});
