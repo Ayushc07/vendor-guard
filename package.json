@@ -1,0 +1,19 @@
+{
+  "name": "vendor-guard",
+  "version": "0.1.0",
+  "description": "Resilience primitives for calling flaky third-party APIs: circuit breaking, retry with budget, bulkheads — and a hard distinction between calls you may replay and calls you may not.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": ["circuit-breaker", "retry", "resilience", "bulkhead", "idempotency", "fintech"],
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "devDependencies": { "typescript": "^5.6.0" }
+}
