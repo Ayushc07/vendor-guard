@@ -1,6 +1,5 @@
 import type { Clock } from '../src/types.ts';
 
-/** A clock the test drives by hand, so backoff costs no real time. */
 export class ManualClock implements Clock {
   public slept: number[] = [];
   private t: number;

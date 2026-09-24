@@ -8,11 +8,9 @@ import {
 } from './types.ts';
 
 export interface RetryOptions {
-  /** Total attempts including the first. 1 disables retrying. */
   maxAttempts: number;
   baseDelayMs: number;
   maxDelayMs: number;
-  /** Injectable for deterministic tests. */
   random: () => number;
 }
 
@@ -34,31 +32,15 @@ export interface GuardOptions {
 }
 
 export interface OnceOptions<T> {
-  /**
-   * Settles an unknown outcome. Called when the operation failed in a way that
-   * does not prove it did not happen (a timeout, a dropped connection).
-   *
-   * Return the real result if the vendor did perform the operation, or
-   * `undefined` if it provably did not.
-   */
   confirm?: () => Promise<T | undefined>;
-  /** Attempts of the *confirmation* lookup, which is a read and so is safe to repeat. */
   confirmAttempts?: number;
 }
 
-/** What a confirmation lookup was able to establish about a non-replayable call. */
 type ConfirmOutcome<T> =
   | { kind: 'performed'; value: T }
   | { kind: 'not-performed' }
   | { kind: 'unknown' };
 
-/**
- * Full-jitter exponential backoff.
- *
- * The jitter is not decoration: without it, every caller that failed at the
- * same instant retries at the same instant, and the vendor gets its outage
- * back in synchronised waves.
- */
 export function backoffDelay(attempt: number, options: RetryOptions): number {
   const ceiling = Math.min(options.maxDelayMs, options.baseDelayMs * 2 ** (attempt - 1));
   return Math.floor(options.random() * ceiling);
@@ -87,14 +69,8 @@ export class Guard {
     return this.breaker.currentState();
   }
 
-  /**
-   * Run an operation that is safe to repeat — a bureau pull, a GST lookup,
-   * any read. Failures are retried within the budget.
-   */
   async execute<T>(operation: () => Promise<T>): Promise<T> {
     let lastError: unknown;
-    // One call earns one deposit. Depositing per attempt would let retries top
-    // the budget up as they spend it, funding the amplification it exists to stop.
     this.budget.deposit();
     for (let attempt = 1; attempt <= this.retry.maxAttempts; attempt += 1) {
       try {
@@ -102,7 +78,6 @@ export class Guard {
       } catch (error) {
         lastError = error;
         const verdict = this.classifier.onError(error);
-        // A business answer is the caller's problem, not something to repeat.
         if (verdict !== 'failure') throw error;
         if (attempt === this.retry.maxAttempts) throw error;
         if (!this.retryableCircuitState(error)) throw error;
@@ -114,14 +89,6 @@ export class Guard {
     throw lastError;
   }
 
-  /**
-   * Run an operation that must happen at most once — a disbursal, a mandate
-   * registration, anything that moves money.
-   *
-   * It is never retried. If it fails in a way that leaves the outcome unknown,
-   * `confirm` is asked what actually happened; if that cannot settle it, an
-   * IndeterminateError is raised so a human or a reconciliation sweep decides.
-   */
   async executeOnce<T>(operation: () => Promise<T>, options: OnceOptions<T> = {}): Promise<T> {
     this.budget.deposit();
     try {
@@ -133,24 +100,13 @@ export class Guard {
 
       const outcome = await this.confirmOutcome(options.confirm, options.confirmAttempts ?? 3);
       switch (outcome.kind) {
-        // The vendor did perform it; the caller gets the real result.
         case 'performed': return outcome.value;
-        // The vendor states it did not, so the original failure stands.
         case 'not-performed': throw error;
-        // Nobody can say. Explicitly not a failure — see IndeterminateError.
         case 'unknown': throw new IndeterminateError(this.name, error);
       }
     }
   }
 
-  /**
-   * Asks the confirmation lookup what actually happened.
-   *
-   * The lookup is a read, so it may be repeated. Its three answers are returned
-   * as data rather than signalled by throwing: distinguishing "the vendor says
-   * no" from "the lookup itself broke" by inspecting what came back out of a
-   * catch block is how the two get confused.
-   */
   private async confirmOutcome<T>(
     confirm: () => Promise<T | undefined>,
     attempts: number,
@@ -158,7 +114,6 @@ export class Guard {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
         const confirmed = await confirm();
-        // `undefined` is the vendor stating the operation did not happen.
         return confirmed === undefined ? { kind: 'not-performed' } : { kind: 'performed', value: confirmed };
       } catch {
         if (attempt === attempts) return { kind: 'unknown' };
@@ -186,7 +141,6 @@ export class Guard {
     }
   }
 
-  /** Never spend a retry on a circuit that has just opened. */
   private retryableCircuitState(error: unknown): boolean {
     return (error as { code?: unknown } | null)?.code !== 'CIRCUIT_OPEN';
   }

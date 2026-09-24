@@ -4,7 +4,7 @@ import { guard, backoffDelay, defaultRetryOptions } from '../src/guard.ts';
 import { RetryBudgetExhaustedError } from '../src/types.ts';
 import { ManualClock, httpError, networkError } from './helpers.ts';
 
-const fixedRandom = () => 1; // full jitter at its ceiling, so delays are predictable
+const fixedRandom = () => 1;
 
 test('retries a transient 503 and succeeds', async () => {
   const clock = new ManualClock();
@@ -61,7 +61,7 @@ test('retry budget refuses to amplify a sustained outage', async () => {
     name: 'bureau', clock,
     retry: { maxAttempts: 2, random: fixedRandom },
     budget: { ratio: 0.1, minTokens: 2 },
-    breaker: { minimumThroughput: 10_000 }, // keep the breaker out of this test
+    breaker: { minimumThroughput: 10_000 },
   });
   let exhausted = 0;
   for (let i = 0; i < 12; i += 1) {
@@ -88,16 +88,12 @@ test('a failing call cannot fund its own retries', async () => {
     name: 'bureau', clock,
     retry: { maxAttempts: 10, random: fixedRandom },
     budget: { ratio: 0.5, minTokens: 1 },
-    breaker: { minimumThroughput: 10_000 }, // keep the breaker out of this test
+    breaker: { minimumThroughput: 10_000 },
   });
   let calls = 0;
   await assert.rejects(
     g.execute(async () => { calls += 1; throw httpError(503); }),
     RetryBudgetExhaustedError,
   );
-  // One call earns one deposit on top of the opening allowance, and that pays
-  // for exactly one retry. Depositing per *attempt* would let the retries
-  // top the budget up as they spend it, which is the amplification the budget
-  // exists to prevent.
   assert.equal(calls, 2, 'retries must be funded by real traffic, not by other retries');
 });

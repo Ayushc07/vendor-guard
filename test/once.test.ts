@@ -79,7 +79,5 @@ test('a confirmation that rethrows the original failure is not read as proof', a
     ),
     IndeterminateError,
   );
-  // Only `undefined` is the vendor stating the operation did not happen. A
-  // lookup that fails is an unsettled outcome, whatever it happens to throw.
   assert.equal(confirmCalls, 2, 'a failing lookup is retried, not mistaken for a denial');
 });

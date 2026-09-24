@@ -1,15 +1,5 @@
-/**
- * How a call's outcome should be interpreted by the resilience layer.
- *
- * The distinction that matters most is `ignore`. A vendor replying
- * "no record found for this PAN" is a *business answer*, not a fault.
- * Counting it as a failure is the classic way to take a healthy vendor
- * offline for everyone the moment a batch of genuinely invalid
- * applicants arrives.
- */
 export type Verdict = 'success' | 'failure' | 'ignore';
 
-/** Classifies a thrown value, or a returned value, into a verdict. */
 export interface Classifier {
   onError(error: unknown): Verdict;
   onSuccess?(value: unknown): Verdict;
@@ -43,13 +33,6 @@ export class BulkheadFullError extends Error {
   }
 }
 
-/**
- * Thrown when a caller queued for a bulkhead slot gave up — the queue-wait
- * deadline passed, or the caller's own signal was aborted.
- *
- * A queue without a deadline recreates the failure the bulkhead exists to
- * prevent: workers held indefinitely by a vendor that stopped answering.
- */
 export class BulkheadTimeoutError extends Error {
   readonly code = 'BULKHEAD_TIMEOUT';
   constructor(name: string, detail: string, cause?: unknown) {
@@ -66,14 +49,6 @@ export class RetryBudgetExhaustedError extends Error {
   }
 }
 
-/**
- * Thrown when a non-replayable call failed in a way that leaves its
- * real outcome unknown, and the confirmation lookup could not settle it.
- *
- * This is deliberately its own type. A timeout on a disbursal is not a
- * failure — it is an *unknown*, and code that treats the two the same
- * is how money moves twice.
- */
 export class IndeterminateError extends Error {
   readonly code = 'INDETERMINATE';
   constructor(name: string, cause: unknown) {

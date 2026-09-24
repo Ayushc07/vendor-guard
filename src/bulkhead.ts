@@ -3,7 +3,6 @@ import { BulkheadFullError, BulkheadTimeoutError } from './types.ts';
 export interface BulkheadOptions {
   maxConcurrent: number;
   maxQueue: number;
-  /** How long a caller may wait for a slot before giving up. */
   queueTimeoutMs: number;
 }
 
@@ -14,24 +13,10 @@ export const defaultBulkheadOptions: BulkheadOptions = {
 };
 
 interface Waiter {
-  /** Hands this waiter the slot released to it. */
   admit(): void;
-  /** Removes it from the queue and fails its caller. */
   cancel(detail: string, cause?: unknown): void;
 }
 
-/**
- * Bounded concurrency per vendor.
- *
- * A slow vendor is more dangerous than a down one: down fails fast, slow holds
- * your workers. This keeps one vendor's latency inside its own pool instead of
- * letting it consume every connection the service has.
- *
- * The queue is bounded in *time* as well as in length. An unbounded wait would
- * reproduce the very failure the bulkhead exists to prevent, so a caller that
- * has not been admitted within `queueTimeoutMs` — or whose own signal aborts —
- * leaves the queue with a BulkheadTimeoutError.
- */
 export class Bulkhead {
   private inFlight = 0;
   private queue: Waiter[] = [];
@@ -59,8 +44,6 @@ export class Bulkhead {
     return new Promise<void>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
 
-      // Leaving the queue is the same work however the wait ends; doing it on
-      // every path is what stops release() handing a slot to a dead waiter.
       const leave = (): void => {
         if (timer !== undefined) clearTimeout(timer);
         if (signal !== undefined) signal.removeEventListener('abort', onAbort);
@@ -84,11 +67,6 @@ export class Bulkhead {
     });
   }
 
-  /**
-   * Hands the slot straight to the next waiter rather than freeing it and
-   * letting them race for it: a caller arriving between those two steps would
-   * otherwise take the slot and push concurrency past `maxConcurrent`.
-   */
   release(): void {
     const next = this.queue.shift();
     if (next) { next.admit(); return; }

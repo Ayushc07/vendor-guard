@@ -44,7 +44,7 @@ test('bulkhead caps concurrency and rejects a full queue', async () => {
   await bh.acquire();
   assert.deepEqual(bh.stats(), { inFlight: 2, queued: 0 });
 
-  const queued = bh.acquire();            // waits
+  const queued = bh.acquire();
   await assert.rejects(bh.acquire(), BulkheadFullError);
 
   bh.release();
@@ -63,7 +63,7 @@ test('retry budget grants, spends and refuses', () => {
 
 test('a queued caller gives up instead of waiting forever', async () => {
   const bh = new Bulkhead('vendor', { maxConcurrent: 1, maxQueue: 5, queueTimeoutMs: 20 });
-  await bh.acquire();                       // the only slot, never released
+  await bh.acquire();
   await assert.rejects(bh.acquire(), BulkheadTimeoutError);
   assert.deepEqual(bh.stats(), { inFlight: 1, queued: 0 }, 'a caller that gave up must leave the queue');
 });
@@ -81,12 +81,12 @@ test('a queued caller can be cancelled by its own signal', async () => {
 test('a slot freed after a waiter gave up still reaches a live waiter', async () => {
   const bh = new Bulkhead('vendor', { maxConcurrent: 1, maxQueue: 5, queueTimeoutMs: 20 });
   await bh.acquire();
-  const abandoned = bh.acquire();                    // times out at 20ms
+  const abandoned = bh.acquire();
   await assert.rejects(abandoned, BulkheadTimeoutError);
 
-  const live = bh.acquire();                         // joins an empty queue
+  const live = bh.acquire();
   bh.release();
-  await live;                                        // must not hang behind a corpse
+  await live;
   assert.deepEqual(bh.stats(), { inFlight: 1, queued: 0 });
 });
 
