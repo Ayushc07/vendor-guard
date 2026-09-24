@@ -3,7 +3,7 @@ import { Bulkhead, type BulkheadOptions } from './bulkhead.ts';
 import { RetryBudget, type BudgetOptions } from './budget.ts';
 import { defaultClassifier, retryAfterMs } from './classify.ts';
 import {
-  IndeterminateError, RetryBudgetExhaustedError,
+  IndeterminateError, RetryBudgetExhaustedError, UnsuccessfulResponseError,
   systemClock, type Classifier, type Clock,
 } from './types.ts';
 
@@ -77,7 +77,9 @@ export class Guard {
         return await this.attempt(operation);
       } catch (error) {
         lastError = error;
-        const verdict = this.classifier.onError(error);
+        const verdict = error instanceof UnsuccessfulResponseError
+          ? 'failure'
+          : this.classifier.onError(error);
         if (verdict !== 'failure') throw error;
         if (attempt === this.retry.maxAttempts) throw error;
         if (!this.retryableCircuitState(error)) throw error;
@@ -94,6 +96,7 @@ export class Guard {
     try {
       return await this.attempt(operation);
     } catch (error) {
+      if (error instanceof UnsuccessfulResponseError) throw error;
       const verdict = this.classifier.onError(error);
       if (verdict !== 'failure') throw error;
       if (!options.confirm) throw new IndeterminateError(this.name, error);
@@ -129,9 +132,17 @@ export class Guard {
     const startedAt = this.clock.now();
     try {
       const result = await operation();
-      this.breaker.recordSuccess(this.clock.now() - startedAt);
+      const elapsed = this.clock.now() - startedAt;
+      const verdict = this.classifier.onSuccess?.(result) ?? 'success';
+      if (verdict === 'failure') {
+        this.breaker.recordFailure(elapsed);
+        throw new UnsuccessfulResponseError(this.name, result);
+      }
+      if (verdict === 'ignore') this.breaker.recordIgnored();
+      else this.breaker.recordSuccess(elapsed);
       return result;
     } catch (error) {
+      if (error instanceof UnsuccessfulResponseError) throw error;
       const verdict = this.classifier.onError(error);
       if (verdict === 'failure') this.breaker.recordFailure(this.clock.now() - startedAt);
       else this.breaker.recordIgnored();

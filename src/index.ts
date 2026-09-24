@@ -9,6 +9,6 @@ export type { BudgetOptions } from './budget.ts';
 export { defaultClassifier, retryAfterMs } from './classify.ts';
 export {
   systemClock, CircuitOpenError, BulkheadFullError, BulkheadTimeoutError,
-  RetryBudgetExhaustedError, IndeterminateError,
+  RetryBudgetExhaustedError, IndeterminateError, UnsuccessfulResponseError,
 } from './types.ts';
 export type { Clock, Classifier, Verdict } from './types.ts';

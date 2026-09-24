@@ -56,3 +56,13 @@ export class IndeterminateError extends Error {
     this.name = 'IndeterminateError';
   }
 }
+
+export class UnsuccessfulResponseError extends Error {
+  readonly code = 'UNSUCCESSFUL_RESPONSE';
+  readonly value: unknown;
+  constructor(name: string, value: unknown) {
+    super(`"${name}" returned a value its classifier read as a failure`);
+    this.name = 'UnsuccessfulResponseError';
+    this.value = value;
+  }
+}
