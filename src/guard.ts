@@ -3,7 +3,7 @@ import { Bulkhead, type BulkheadOptions } from './bulkhead.ts';
 import { RetryBudget, type BudgetOptions } from './budget.ts';
 import { defaultClassifier, retryAfterMs } from './classify.ts';
 import {
-  IndeterminateError, RetryBudgetExhaustedError, UnsuccessfulResponseError,
+  CallTimeoutError, IndeterminateError, RetryBudgetExhaustedError, UnsuccessfulResponseError,
   systemClock, type Classifier, type Clock,
 } from './types.ts';
 
@@ -27,9 +27,12 @@ export interface GuardOptions {
   retry?: Partial<RetryOptions>;
   budget?: Partial<BudgetOptions>;
   bulkhead?: Partial<BulkheadOptions>;
+  timeoutMs?: number;
   classifier?: Classifier;
   clock?: Clock;
 }
+
+export type Operation<T> = (signal: AbortSignal) => Promise<T>;
 
 export interface OnceOptions<T> {
   confirm?: () => Promise<T | undefined>;
@@ -52,11 +55,16 @@ export class Guard {
   private readonly bulkhead: Bulkhead;
   private readonly budget: RetryBudget;
   private readonly retry: RetryOptions;
+  private readonly timeoutMs: number | undefined;
   private readonly classifier: Classifier;
   private readonly clock: Clock;
 
   constructor(options: GuardOptions) {
+    if (options.timeoutMs !== undefined && !(options.timeoutMs > 0 && Number.isFinite(options.timeoutMs))) {
+      throw new RangeError(`timeoutMs must be a positive finite number, got ${options.timeoutMs}`);
+    }
     this.name = options.name;
+    this.timeoutMs = options.timeoutMs;
     this.clock = options.clock ?? systemClock;
     this.classifier = options.classifier ?? defaultClassifier;
     this.retry = { ...defaultRetryOptions, ...options.retry };
@@ -69,7 +77,7 @@ export class Guard {
     return this.breaker.currentState();
   }
 
-  async execute<T>(operation: () => Promise<T>): Promise<T> {
+  async execute<T>(operation: Operation<T>): Promise<T> {
     let lastError: unknown;
     this.budget.deposit();
     for (let attempt = 1; attempt <= this.retry.maxAttempts; attempt += 1) {
@@ -77,9 +85,7 @@ export class Guard {
         return await this.attempt(operation);
       } catch (error) {
         lastError = error;
-        const verdict = error instanceof UnsuccessfulResponseError
-          ? 'failure'
-          : this.classifier.onError(error);
+        const verdict = this.isGuardFailure(error) ? 'failure' : this.classifier.onError(error);
         if (verdict !== 'failure') throw error;
         if (attempt === this.retry.maxAttempts) throw error;
         if (!this.retryableCircuitState(error)) throw error;
@@ -91,13 +97,13 @@ export class Guard {
     throw lastError;
   }
 
-  async executeOnce<T>(operation: () => Promise<T>, options: OnceOptions<T> = {}): Promise<T> {
+  async executeOnce<T>(operation: Operation<T>, options: OnceOptions<T> = {}): Promise<T> {
     this.budget.deposit();
     try {
       return await this.attempt(operation);
     } catch (error) {
       if (error instanceof UnsuccessfulResponseError) throw error;
-      const verdict = this.classifier.onError(error);
+      const verdict = error instanceof CallTimeoutError ? 'failure' : this.classifier.onError(error);
       if (verdict !== 'failure') throw error;
       if (!options.confirm) throw new IndeterminateError(this.name, error);
 
@@ -126,12 +132,12 @@ export class Guard {
     return { kind: 'unknown' };
   }
 
-  private async attempt<T>(operation: () => Promise<T>): Promise<T> {
+  private async attempt<T>(operation: Operation<T>): Promise<T> {
     this.breaker.acquire();
     await this.bulkhead.acquire();
     const startedAt = this.clock.now();
     try {
-      const result = await operation();
+      const result = await this.withinDeadline(operation);
       const elapsed = this.clock.now() - startedAt;
       const verdict = this.classifier.onSuccess?.(result) ?? 'success';
       if (verdict === 'failure') {
@@ -143,13 +149,36 @@ export class Guard {
       return result;
     } catch (error) {
       if (error instanceof UnsuccessfulResponseError) throw error;
-      const verdict = this.classifier.onError(error);
+      const verdict = error instanceof CallTimeoutError ? 'failure' : this.classifier.onError(error);
       if (verdict === 'failure') this.breaker.recordFailure(this.clock.now() - startedAt);
       else this.breaker.recordIgnored();
       throw error;
     } finally {
       this.bulkhead.release();
     }
+  }
+
+  private withinDeadline<T>(operation: Operation<T>): Promise<T> {
+    const controller = new AbortController();
+    const timeoutMs = this.timeoutMs;
+    if (timeoutMs === undefined) return operation(controller.signal);
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const timeout = new CallTimeoutError(this.name, timeoutMs);
+        reject(timeout);
+        controller.abort(timeout);
+      }, timeoutMs);
+      Promise.resolve()
+        .then(() => operation(controller.signal))
+        .then(
+          (value) => { clearTimeout(timer); resolve(value); },
+          (error) => { clearTimeout(timer); reject(error); },
+        );
+    });
+  }
+
+  private isGuardFailure(error: unknown): boolean {
+    return error instanceof UnsuccessfulResponseError || error instanceof CallTimeoutError;
   }
 
   private retryableCircuitState(error: unknown): boolean {

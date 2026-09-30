@@ -66,3 +66,13 @@ export class UnsuccessfulResponseError extends Error {
     this.value = value;
   }
 }
+
+export class CallTimeoutError extends Error {
+  readonly code = 'CALL_TIMEOUT';
+  readonly timeoutMs: number;
+  constructor(name: string, timeoutMs: number) {
+    super(`"${name}" did not settle within ${timeoutMs}ms`);
+    this.name = 'CallTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}

@@ -11,8 +11,8 @@ Zero runtime dependencies. TypeScript. Node 22+.
 ```ts
 import { guard } from 'vendor-guard';
 
-const bureau = guard({ name: 'cibil', retry: { maxAttempts: 3 } });
-const report = await bureau.execute(() => fetchReport(pan));       // replayed on failure
+const bureau = guard({ name: 'cibil', timeoutMs: 3_000, retry: { maxAttempts: 3 } });
+const report = await bureau.execute((signal) => fetchReport(pan, { signal }));  // replayed on failure
 
 const rail = guard({ name: 'payment-rail', retry: { maxAttempts: 1 } });
 const payout = await rail.executeOnce(() => disburse(ref), {       // never replayed
@@ -47,6 +47,8 @@ So retries are drawn from a **budget** — a token bucket earning `ratio` per ca
 
 Down fails fast. Slow holds your workers. The breaker therefore trips on **two** independent conditions — a failure rate *and* a slow-call rate over the same rolling window — and a **bulkhead** bounds concurrency per vendor so one slow provider cannot consume every connection the service has.
 
+Measuring slowness is not the same as bounding it: a vendor that accepts the connection and never answers holds its bulkhead slot forever. `timeoutMs` puts a deadline on every attempt. When it passes, the call fails with `CallTimeoutError`, the slot is released, and the `AbortSignal` handed to your function is aborted so the underlying request can be torn down.
+
 ### 4. A timeout is not a failure — it is an unknown
 
 This is the one that matters when money is involved.
@@ -69,9 +71,13 @@ This is the one that matters when money is involved.
 
 **Half-open admits a bounded number of probes.** One failed probe reopens the circuit immediately; a full set of successes closes it.
 
-**The clock is injectable.** Every timing test in the suite runs against a `ManualClock`, so the whole suite finishes in ~115ms with no fake timers and no flakiness.
+**The clock is injectable.** Breaker windows, backoff and the retry budget are all tested against a `ManualClock`, with no fake timers. The one exception is the call deadline, which runs on real timers of a few tens of milliseconds; the whole suite still finishes in about 300ms.
 
 **The bulkhead queue is bounded in time, not just in length.** A waiter with no deadline is held exactly as long as the vendor is slow, which is the failure the bulkhead was added to prevent. Callers give up after `queueTimeoutMs` with a `BulkheadTimeoutError`, and `acquire` accepts an `AbortSignal` so a caller can withdraw earlier.
+
+**A timeout is the guard's verdict, not the classifier's.** The classifier reads what the vendor said; a timeout means the vendor said nothing. It always counts against the breaker, and in `executeOnce` it always goes to `confirm` — the request may have landed and the answer been lost on the way back, which is exactly the unknown that path exists for.
+
+**Releasing the slot does not stop the work.** The guard cannot kill a promise. If your function ignores its `signal`, the request keeps running after the timeout, outside the bulkhead's count. Pass the signal to `fetch` or your client.
 
 **Full jitter can pick zero.** `random() * ceiling`, not `ceiling/2 + random()*ceiling/2`. Decorrelating retries is the entire point; a jitter that guarantees a minimum delay is just a slower thundering herd.
 
@@ -87,6 +93,7 @@ guard({
   retry:    { maxAttempts: 3, baseDelayMs: 100, maxDelayMs: 2_000 },
   budget:   { ratio: 0.1, minTokens: 10, windowMs: 10_000 },
   bulkhead: { maxConcurrent: 20, maxQueue: 50, queueTimeoutMs: 10_000 },
+  timeoutMs: 3_000,   // per attempt; unset means no deadline
   classifier,   // override how outcomes are read
   clock,        // override for tests
 });
@@ -96,9 +103,11 @@ guard({
 |---|---|
 | `execute(fn)` | idempotent operations — reads, lookups, status checks |
 | `executeOnce(fn, { confirm })` | operations that must happen at most once |
+
+`fn` receives an `AbortSignal`, aborted when `timeoutMs` passes.
 | `state()` | `'closed'` \| `'open'` \| `'half-open'` |
 
-Errors: `CircuitOpenError`, `BulkheadFullError`, `BulkheadTimeoutError`, `RetryBudgetExhaustedError`, `IndeterminateError`.
+Errors: `CircuitOpenError`, `BulkheadFullError`, `BulkheadTimeoutError`, `RetryBudgetExhaustedError`, `IndeterminateError`, `UnsuccessfulResponseError`, `CallTimeoutError`.
 
 The building blocks — `CircuitBreaker`, `Bulkhead`, `RetryBudget` — are exported individually if you want to compose them yourself.
 
@@ -107,7 +116,7 @@ The building blocks — `CircuitBreaker`, `Bulkhead`, `RetryBudget` — are expo
 ## Running it
 
 ```bash
-npm test        # 30 tests, no build step — Node strips the types
+npm test        # 45 tests, no build step — Node strips the types
 npm run build   # tsc to dist/
 node --experimental-strip-types examples/lending.ts
 ```

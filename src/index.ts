@@ -1,5 +1,5 @@
 export { guard, Guard, backoffDelay } from './guard.ts';
-export type { GuardOptions, OnceOptions, RetryOptions } from './guard.ts';
+export type { GuardOptions, OnceOptions, Operation, RetryOptions } from './guard.ts';
 export { CircuitBreaker, defaultBreakerOptions } from './breaker.ts';
 export type { BreakerOptions, BreakerState } from './breaker.ts';
 export { Bulkhead, defaultBulkheadOptions } from './bulkhead.ts';
@@ -9,6 +9,6 @@ export type { BudgetOptions } from './budget.ts';
 export { defaultClassifier, retryAfterMs } from './classify.ts';
 export {
   systemClock, CircuitOpenError, BulkheadFullError, BulkheadTimeoutError,
-  RetryBudgetExhaustedError, IndeterminateError, UnsuccessfulResponseError,
+  RetryBudgetExhaustedError, IndeterminateError, UnsuccessfulResponseError, CallTimeoutError,
 } from './types.ts';
 export type { Clock, Classifier, Verdict } from './types.ts';
